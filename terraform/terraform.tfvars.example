@@ -1,0 +1,15 @@
+aws_region          = "us-west-2"
+vpc_id              = "vpc-xxxxxxxxxxxxxxxxx"
+subnet_id           = "subnet-xxxxxxxxxxxxxxxxx"
+security_group_id   = "sg-xxxxxxxxxxxxxxxxx"
+# Either use existing IAM profile or let Terraform create one
+create_iam_role     = true                    # Set to true to create a new role with SSM permissions
+iam_instance_profile = "your-ssm-enabled-profile" # Ignored if create_iam_role = true
+ami_id              = "ami-0ee02ddf90e99f238"  # Ubuntu 22.04 LTS in us-west-2
+instance_type       = "t3.medium"
+instance_name       = "k3s-cluster"
+use_ssm             = true
+# Optional SSH settings (not required when use_ssm = true)
+# key_name            = "your-ssh-key-name"
+# private_key_path    = "~/.ssh/your-private-key.pem"
+root_volume_size    = 50
