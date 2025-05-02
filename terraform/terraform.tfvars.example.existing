@@ -1,0 +1,6 @@
+aws_region = "us-west-2"
+existing_instance_id = "i-0123456789abcdef0"  # Replace with your existing EC2 instance ID
+
+# IAM Role Configuration
+create_iam_role = false  # Set to true if you want to create a new IAM role
+iam_role_name = "k3s-ssm-role"  # Name for the IAM role if create_iam_role is true

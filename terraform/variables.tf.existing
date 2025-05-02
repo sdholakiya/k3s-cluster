@@ -1,0 +1,28 @@
+variable "aws_region" {
+  description = "AWS region where the existing EC2 instance is located"
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "existing_instance_id" {
+  description = "ID of the existing EC2 instance to deploy K3s on"
+  type        = string
+}
+
+variable "use_ssm" {
+  description = "Whether to use SSM for connection instead of SSH"
+  type        = bool
+  default     = true
+}
+
+variable "create_iam_role" {
+  description = "Whether to create a new IAM role with SSM permissions"
+  type        = bool
+  default     = false
+}
+
+variable "iam_role_name" {
+  description = "Name for the IAM role (if create_iam_role is true)"
+  type        = string
+  default     = "k3s-ssm-role"
+}
