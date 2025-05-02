@@ -10,7 +10,7 @@ variable "vpc_id" {
 }
 
 variable "subnet_id" {
-  description = "Subnet ID for the EC2 instance"
+  description = "Private subnet ID for the EC2 instance - must be a private subnet with VPC endpoint for SSM"
   type        = string
 }
 

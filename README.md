@@ -25,10 +25,21 @@ Configure the following GitLab CI/CD variables:
 
 2. Update `terraform.tfvars` with your specific values:
    - VPC ID
-   - Subnet ID
+   - Private Subnet ID (must be a private subnet)
    - Security Group ID
    - Choose whether to create a new IAM role (`create_iam_role=true`) or use existing one
    - Other customization options
+   
+## Private Subnet Requirements
+
+This deployment uses only private subnets for enhanced security. The following VPC requirements must be met:
+
+1. A VPC with private subnets configured
+2. Required VPC endpoints for SSM connectivity:
+   - com.amazonaws.[region].ssm
+   - com.amazonaws.[region].ec2messages
+   - com.amazonaws.[region].ssmmessages
+3. A route from the private subnet to these endpoints
 
 ## Security Group Requirements
 

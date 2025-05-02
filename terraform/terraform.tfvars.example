@@ -1,5 +1,6 @@
 aws_region          = "us-west-2"
 vpc_id              = "vpc-xxxxxxxxxxxxxxxxx"
+# Must be a private subnet in a VPC with SSM endpoints configured
 subnet_id           = "subnet-xxxxxxxxxxxxxxxxx"
 security_group_id   = "sg-xxxxxxxxxxxxxxxxx"
 # Either use existing IAM profile or let Terraform create one

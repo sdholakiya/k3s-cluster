@@ -29,11 +29,11 @@ aws ssm start-session \
 # Clean the output
 grep -v "Starting session" $(dirname $0)/output/kubeconfig.tmp | grep -v "Waiting for connections" > $(dirname $0)/output/kubeconfig
 
-# Get public IP to update kubeconfig
-PUBLIC_IP=$(aws ec2 describe-instances --instance-ids $EC2_INSTANCE_ID --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+# Get private IP to update kubeconfig
+PRIVATE_IP=$(aws ec2 describe-instances --instance-ids $EC2_INSTANCE_ID --query "Reservations[0].Instances[0].PrivateIpAddress" --output text)
 
-# Update the kubeconfig with the public IP
-sed -i.bak "s/127.0.0.1/$PUBLIC_IP/g" $(dirname $0)/output/kubeconfig
+# Update the kubeconfig with the private IP
+sed -i.bak "s/127.0.0.1/$PRIVATE_IP/g" $(dirname $0)/output/kubeconfig
 
 echo "Kubeconfig has been saved to $(dirname $0)/output/kubeconfig"
 echo "To use this kubeconfig:"

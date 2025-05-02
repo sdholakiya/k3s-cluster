@@ -2,6 +2,15 @@ provider "aws" {
   region = var.aws_region
 }
 
+# This configuration deploys K3s in private subnets only.
+# REQUIREMENTS:
+# 1. The VPC must have SSM VPC endpoints configured for private instances to connect to AWS Systems Manager
+# 2. For the SSM connection to work, the VPC needs:
+#    - com.amazonaws.[region].ssm
+#    - com.amazonaws.[region].ec2messages
+#    - com.amazonaws.[region].ssmmessages
+# 3. The security group must allow outbound traffic to these endpoints
+
 # Optionally create an IAM role and instance profile for SSM access
 resource "aws_iam_role" "ssm_role" {
   count = var.create_iam_role ? 1 : 0
@@ -38,6 +47,7 @@ resource "aws_instance" "k3s_node" {
   instance_type          = var.instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [var.security_group_id]
+  associate_public_ip_address = false
   iam_instance_profile   = var.create_iam_role ? aws_iam_instance_profile.ssm_profile[0].name : var.iam_instance_profile
   key_name               = var.use_ssm ? null : var.key_name
 
@@ -111,16 +121,13 @@ resource "null_resource" "kubeconfig_update" {
   depends_on = [null_resource.get_kubeconfig]
 
   provisioner "local-exec" {
-    command = "sed -i.bak 's/127.0.0.1/${aws_instance.k3s_node.public_ip}/g' ${path.module}/output/kubeconfig"
+    command = "sed -i.bak 's/127.0.0.1/${aws_instance.k3s_node.private_ip}/g' ${path.module}/output/kubeconfig"
   }
 }
 
 output "k3s_server_ip" {
-  value = aws_instance.k3s_node.public_ip
-}
-
-output "k3s_server_private_ip" {
   value = aws_instance.k3s_node.private_ip
+  description = "Private IP address of the K3s server"
 }
 
 output "kubeconfig_path" {
