@@ -1,0 +1,118 @@
+stages:
+  - validate
+  - plan
+  - apply
+  - destroy
+
+variables:
+  TF_ROOT: ${CI_PROJECT_DIR}/k3s-cluster/terraform
+  # If your terraform files are in a subdirectory, specify it here
+  # TF_ROOT: ${CI_PROJECT_DIR}/terraform
+
+# Cache downloaded packages between pipeline runs
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - ${TF_ROOT}/.terraform
+
+# Common setup commands used across jobs
+.terraform_setup: &terraform_setup
+  before_script:
+    - cd ${TF_ROOT}
+    - terraform --version
+    - terraform init -backend=false
+
+# Validate terraform configuration
+validate:
+  stage: validate
+  image: hashicorp/terraform:latest
+  <<: *terraform_setup
+  script:
+    - terraform validate
+    - terraform fmt -check
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Create terraform plan
+plan:
+  stage: plan
+  image: hashicorp/terraform:latest
+  <<: *terraform_setup
+  script:
+    - cp terraform.tfvars.example terraform.tfvars || echo "Using existing terraform.tfvars"
+    - terraform plan -out=tfplan
+  artifacts:
+    paths:
+      - ${TF_ROOT}/tfplan
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# Apply terraform plan (manual trigger)
+apply:
+  stage: apply
+  image: hashicorp/terraform:latest
+  <<: *terraform_setup
+  script:
+    - terraform apply -auto-approve tfplan
+    # Wait for the kubeconfig to be generated
+    - |
+      if [ -f "${TF_ROOT}/output/kubeconfig" ]; then
+        echo "Kubeconfig was successfully generated"
+      else
+        echo "Waiting for kubeconfig to be generated..."
+        sleep 120
+        if [ -f "${TF_ROOT}/output/kubeconfig" ]; then
+          echo "Kubeconfig was successfully generated"
+        else
+          echo "WARNING: Kubeconfig was not generated within the expected time"
+        fi
+      fi
+    - |
+      if [ -f "${TF_ROOT}/output/kubeconfig" ]; then
+        # Save instance ID and kubeconfig as job artifacts
+        INSTANCE_ID=$(terraform output -raw instance_id)
+        echo "Instance ID: ${INSTANCE_ID}" > instance_info.txt
+        echo "SSM connection command: aws ssm start-session --target ${INSTANCE_ID}" >> instance_info.txt
+      fi
+  artifacts:
+    paths:
+      - ${TF_ROOT}/output/kubeconfig
+      - ${TF_ROOT}/instance_info.txt
+    expire_in: 1 week
+  dependencies:
+    - plan
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Destroy infrastructure (manual trigger)
+destroy:
+  stage: destroy
+  image: hashicorp/terraform:latest
+  <<: *terraform_setup
+  script:
+    - terraform destroy -auto-approve
+  dependencies: []
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Optional: Add a stage to test Kubernetes connection
+test_connection:
+  stage: apply
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
+  script:
+    - mkdir -p ~/.kube
+    - cp ${TF_ROOT}/output/kubeconfig ~/.kube/config
+    - kubectl get nodes
+    - kubectl get pods --all-namespaces
+  dependencies:
+    - apply
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
