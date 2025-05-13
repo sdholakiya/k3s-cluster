@@ -67,7 +67,16 @@ This project automatically deploys a K3s Kubernetes cluster on an AWS EC2 instan
    - Private Subnet ID (must be a private subnet)
    - Security Group ID
    - Choose whether to create a new IAM role (`create_iam_role=true`) or use existing one
+   - S3 bucket name for Terraform state storage
    - Other customization options
+
+3. Initialize Terraform with S3 backend:
+   ```
+   cd terraform
+   ./init_backend.sh
+   ```
+
+   This will configure Terraform to use the S3 bucket for state storage and DynamoDB for state locking.
    
 ## Private Subnet Requirements
 

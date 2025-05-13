@@ -14,3 +14,9 @@ use_ssm             = true
 # key_name            = "your-ssh-key-name"
 # private_key_path    = "~/.ssh/your-private-key.pem"
 root_volume_size    = 50
+
+# S3 backend configuration
+terraform_state_bucket         = "your-terraform-state-bucket-name"
+terraform_state_key            = "k3s-cluster/terraform.tfstate"
+terraform_state_region         = "us-west-2" # Default to same region as resources
+terraform_state_dynamodb_table = "terraform-state-lock"

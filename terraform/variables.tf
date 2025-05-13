@@ -71,3 +71,26 @@ variable "root_volume_size" {
   type        = number
   default     = 50
 }
+
+variable "terraform_state_bucket" {
+  description = "S3 bucket name for terraform state storage"
+  type        = string
+}
+
+variable "terraform_state_key" {
+  description = "S3 key path for terraform state file"
+  type        = string
+  default     = "k3s-cluster/terraform.tfstate"
+}
+
+variable "terraform_state_region" {
+  description = "AWS region for terraform state bucket"
+  type        = string
+  default     = "us-west-2"
+}
+
+variable "terraform_state_dynamodb_table" {
+  description = "DynamoDB table name for terraform state locking"
+  type        = string
+  default     = "terraform-state-lock"
+}
