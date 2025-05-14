@@ -1,12 +1,41 @@
 # K3s Cluster on AWS with GitLab CI/CD
 
-This project automatically deploys a K3s Kubernetes cluster on an AWS EC2 instance using GitLab CI/CD and Terraform. It uses AWS Systems Manager (SSM) for secure, SSH-less connection to the EC2 instance.
+This project automatically deploys a K3s Kubernetes cluster on an AWS EC2 instance using GitLab CI/CD and Terraform. It uses AWS Systems Manager (SSM) for secure, SSH-less connection to the EC2 instance, and now supports AWS GovCloud (US-West) region.
+
+## Features
+
+- Deploy in either commercial AWS regions or GovCloud
+- Two-stage deployment: EC2 instance creation followed by K3s installation
+- Skip EC2 creation stage when only updating K3s configuration
+- Support for custom AMIs, including shared AMIs
+- Advanced EC2 instance configuration options
+- SSM-based management (no need for SSH)
+- Remote state management with S3 and DynamoDB
 
 ## Prerequisites
 
 1. AWS account with appropriate permissions
 2. GitLab repository with CI/CD capabilities
 3. AWS CLI installed and configured for using SSM
+4. For GovCloud: AWS GovCloud credentials configured
+
+## AWS Authentication
+
+You can use the provided script for AWS SSO authentication:
+
+```bash
+# Make the script executable
+chmod +x aws_sso_credentials.sh
+
+# Run the script with parameters
+./aws_sso_credentials.sh --sso-url https://my-sso-portal.awsapps.com/start --account-id 123456789012 --role-name MyRole
+
+# Or run without parameters and follow the prompts
+./aws_sso_credentials.sh
+
+# You can also specify a custom profile name
+./aws_sso_credentials.sh --profile my-temp-profile --aws-creds-name my-aws-profile
+```
 
 ## GitLab CI/CD Setup
 
@@ -19,9 +48,8 @@ This project automatically deploys a K3s Kubernetes cluster on an AWS EC2 instan
    - `AWS_SESSION_TOKEN`: Your AWS session token (if using temporary credentials from SSO)
    - `AWS_DEFAULT_REGION`: Your preferred AWS region
 
-3. You can use one of the included setup scripts to automatically set these variables:
+3. You can use the included setup script to automatically set these variables:
 
-   **Option 1: For standard AWS credentials:**
    ```bash
    # Make the script executable
    chmod +x setup_gitlab_ci.sh
@@ -30,54 +58,49 @@ This project automatically deploys a K3s Kubernetes cluster on an AWS EC2 instan
    ./setup_gitlab_ci.sh
    ```
 
-   **Option 2: For AWS SSO credentials:**
-   ```bash
-   # Make the script executable
-   chmod +x aws_sso_credentials.sh
+## Deployment Configuration
 
-   # Run the script with parameters
-   ./aws_sso_credentials.sh --sso-url https://my-sso-portal.awsapps.com/start --account-id 123456789012 --role-name MyRole
+### 1. Configure Terraform Variables
 
-   # Or run without parameters and follow the prompts
-   ./aws_sso_credentials.sh
+Create a `terraform.tfvars` file based on one of the provided examples:
 
-   # You can also specify a custom profile name
-   ./aws_sso_credentials.sh --profile my-temp-profile --aws-creds-name my-aws-profile
-   ```
+```bash
+# For commercial AWS regions:
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 
-   The AWS SSO script provides additional features:
-   - Updates your local `~/.aws/credentials` file with a named profile
-   - Allows using the credentials with AWS CLI and Terraform
-   - Works with AWS SSO authentication and web browser login
-   - Provides usage examples for common AWS operations
+# For GovCloud:
+cp terraform/terraform.tfvars.example.govcloud terraform/terraform.tfvars
+```
 
-4. Ensure your GitLab runner has Docker available (the pipeline uses Terraform Docker images)
+Edit the file to customize your deployment configuration.
 
-> **Note**: If using AWS SSO, remember that temporary credentials will expire (typically after 1-12 hours). You'll need to refresh them periodically by running the SSO script again.
+### 2. Initialize Terraform Backend
 
-## Terraform Configuration
+```bash
+cd terraform
+./init_backend.sh
+```
 
-1. Copy the example tfvars file:
-   ```
-   cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-   ```
+### 3. Deploy the Infrastructure
 
-2. Update `terraform.tfvars` with your specific values:
-   - VPC ID
-   - Private Subnet ID (must be a private subnet)
-   - Security Group ID
-   - Choose whether to create a new IAM role (`create_iam_role=true`) or use existing one
-   - S3 bucket name for Terraform state storage
-   - Other customization options
+#### Full Deployment (EC2 + K3s)
 
-3. Initialize Terraform with S3 backend:
-   ```
-   cd terraform
-   ./init_backend.sh
-   ```
+```bash
+terraform apply
+```
 
-   This will configure Terraform to use the S3 bucket for state storage and DynamoDB for state locking.
-   
+#### EC2 Only (Skip K3s Installation)
+
+```bash
+terraform apply -var="skip_k3s_install=true"
+```
+
+#### K3s Update Only (Skip EC2 Creation)
+
+```bash
+terraform apply -var="skip_ec2_creation=true"
+```
+
 ## Private Subnet Requirements
 
 This deployment uses only private subnets for enhanced security. The following VPC requirements must be met:
@@ -130,11 +153,22 @@ The GitLab CI/CD pipeline includes these stages:
 
 3. After successful deployment, the kubeconfig and instance info will be available as pipeline artifacts
 
-## Connecting via SSM
+## Connecting to Your Cluster
 
-After deployment, you can connect to the instance using SSM:
+After successful deployment:
+- Kubeconfig is automatically retrieved via SSM and saved to `terraform/output/kubeconfig`
+- Instance ID and SSM connection commands are provided in the output
 
+### Using kubectl
+
+```bash
+export KUBECONFIG=/path/to/terraform/output/kubeconfig
+kubectl get nodes
 ```
+
+### Using the SSM helper script
+
+```bash
 # Use the helper script
 ./terraform/ssm_commands.sh <instance-id>
 
@@ -142,15 +176,53 @@ After deployment, you can connect to the instance using SSM:
 aws ssm start-session --target <instance-id>
 ```
 
-The instance ID will be displayed in the Terraform output.
+## Terraform Configuration Variables
 
-## Post-Deployment
+### Core Configuration
 
-After successful deployment:
-- Kubeconfig is automatically retrieved via SSM and saved to `terraform/output/kubeconfig`
-- Instance ID and SSM connection commands are provided in the output
-- Use the kubeconfig to connect to your new K3s cluster:
-  ```
-  export KUBECONFIG=/path/to/terraform/output/kubeconfig
-  kubectl get nodes
-  ```
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `aws_region` | AWS region | `"us-west-2"` |
+| `is_govcloud` | Enable GovCloud support | `false` |
+| `skip_ec2_creation` | Skip EC2 creation stage | `false` |
+| `skip_k3s_install` | Skip K3s installation | `false` |
+
+### Infrastructure Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `vpc_id` | VPC ID | Required |
+| `subnet_id` | Subnet ID (private subnet) | Required |
+| `security_group_id` | Security Group ID | Required |
+| `create_iam_role` | Create IAM role for SSM | `false` |
+| `iam_instance_profile` | Existing IAM profile (if not creating) | `""` |
+
+### Instance Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ami_id` | AMI ID | Required |
+| `ami_owners` | AMI owner account IDs | `["self"]` |
+| `instance_type` | EC2 instance type | `"t3.medium"` |
+| `instance_name` | EC2 instance name | `"k3s-cluster"` |
+| `enable_detailed_monitoring` | Enable detailed monitoring | `false` |
+| `instance_tags` | Additional EC2 tags | `{}` |
+
+### Storage Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `root_volume_size` | Root volume size (GB) | `50` |
+| `root_volume_type` | Root volume type | `"gp3"` |
+| `root_volume_iops` | Root volume IOPS | `null` |
+| `root_volume_throughput` | Root volume throughput | `null` |
+| `additional_ebs_volumes` | Additional EBS volumes | `[]` |
+
+## Notes for GovCloud Deployment
+
+When using AWS GovCloud:
+
+1. Set `is_govcloud = true` in your terraform.tfvars
+2. Use a valid GovCloud AMI ID
+3. Ensure your AWS CLI is configured with GovCloud credentials
+4. Use the appropriate region name (`us-gov-west-1`)

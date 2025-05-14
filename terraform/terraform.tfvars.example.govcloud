@@ -1,0 +1,45 @@
+# GovCloud region configuration
+aws_region            = "us-gov-west-1"
+is_govcloud           = true
+skip_ec2_creation     = false
+skip_k3s_install      = false
+
+# Network configuration - replace with your GovCloud VPC details
+vpc_id                = "vpc-xxxxxxxxxxxxxxxxx"
+# Must be a private subnet in a VPC with SSM endpoints configured
+subnet_id             = "subnet-xxxxxxxxxxxxxxxxx"
+security_group_id     = "sg-xxxxxxxxxxxxxxxxx"
+
+# IAM configuration
+create_iam_role       = true
+iam_instance_profile  = ""
+
+# Use a GovCloud AMI ID - find the appropriate ID for your GovCloud account
+# Example: Amazon Linux 2 or Ubuntu in GovCloud
+ami_id                = "ami-xxxxxxxxxxxxxxxxx"
+ami_owners            = ["self"] # If using a shared AMI, use the account ID
+
+# Instance specifications
+instance_type         = "t3.medium"
+instance_name         = "k3s-cluster"
+enable_detailed_monitoring = false
+
+# Storage configuration
+root_volume_size      = 50
+root_volume_type      = "gp3"
+root_volume_iops      = null
+root_volume_throughput = null
+
+# Additional EBS volumes if needed
+additional_ebs_volumes = []
+
+# Connection settings
+use_ssm               = true
+# key_name              = "your-govcloud-ssh-key"
+# private_key_path      = "~/.ssh/your-govcloud-key.pem"
+
+# S3 backend configuration - Use GovCloud S3 bucket
+terraform_state_bucket         = "your-govcloud-terraform-state-bucket"
+terraform_state_key            = "k3s-cluster/terraform.tfstate"
+terraform_state_region         = "us-gov-west-1"
+terraform_state_dynamodb_table = "terraform-state-lock"
