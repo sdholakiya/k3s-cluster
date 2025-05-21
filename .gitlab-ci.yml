@@ -1,13 +1,33 @@
+---
+# GitLab CI/CD Pipeline for K3s Cluster Deployment
+
 stages:
   - validate
   - plan
   - apply
+  - build
+  - deploy
+  - test
   - destroy
 
 variables:
-  TF_ROOT: ${CI_PROJECT_DIR}/k3s-cluster/terraform
-  # If your terraform files are in a subdirectory, specify it here
-  # TF_ROOT: ${CI_PROJECT_DIR}/terraform
+  TF_ROOT: ${CI_PROJECT_DIR}/terraform
+  HELM_DIR: ${CI_PROJECT_DIR}/helm/multi-container-app
+  DOCKER_DIR: ${CI_PROJECT_DIR}/docker
+  KUBECONFIG_PATH: ${CI_PROJECT_DIR}/terraform/output/kubeconfig
+  
+  # Container registry settings (choose one)
+  # For ECR
+  AWS_REGION: ${AWS_DEFAULT_REGION:-"us-west-2"}
+  ECR_REPO_PREFIX: "k3s-app"
+  
+  # For Artifactory
+  # ARTIFACTORY_URL: "https://artifactory.example.com"
+  # ARTIFACTORY_REPO: "docker-local"
+  # ARTIFACTORY_USERNAME and ARTIFACTORY_PASSWORD should be set as CI/CD variables
+  
+  # Container tag
+  CONTAINER_TAG: ${CI_COMMIT_SHORT_SHA:-"latest"}
 
 # Cache downloaded packages between pipeline runs
 cache:
@@ -41,16 +61,47 @@ plan:
   <<: *terraform_setup
   script:
     - cp terraform.tfvars.example terraform.tfvars || echo "Using existing terraform.tfvars"
+    # Update terraform.tfvars with CI/CD variables if needed
+    - |
+      if [ -n "$TF_VAR_terraform_state_bucket" ]; then
+        sed -i "s/terraform_state_bucket = .*/terraform_state_bucket = \"$TF_VAR_terraform_state_bucket\"/g" terraform.tfvars
+      fi
+      if [ -n "$TF_VAR_vpc_id" ]; then
+        sed -i "s/vpc_id = .*/vpc_id = \"$TF_VAR_vpc_id\"/g" terraform.tfvars
+      fi
+      if [ -n "$TF_VAR_subnet_id" ]; then
+        sed -i "s/subnet_id = .*/subnet_id = \"$TF_VAR_subnet_id\"/g" terraform.tfvars
+      fi
+      if [ -n "$TF_VAR_security_group_id" ]; then
+        sed -i "s/security_group_id = .*/security_group_id = \"$TF_VAR_security_group_id\"/g" terraform.tfvars
+      fi
+    - ./init_backend.sh || terraform init -backend=false
     - terraform plan -out=tfplan
   artifacts:
     paths:
       - ${TF_ROOT}/tfplan
+      - ${TF_ROOT}/terraform.tfvars
     expire_in: 1 week
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-# Apply terraform plan (manual trigger)
+# First provision the S3 bucket and DynamoDB table for state storage
+provision_backend:
+  stage: apply
+  image: hashicorp/terraform:latest
+  <<: *terraform_setup
+  script:
+    - terraform apply -auto-approve -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks tfplan
+    - sleep 30  # Give AWS some time to fully provision the resources
+    - ./init_backend.sh  # Configure backend with actual resources
+  dependencies:
+    - plan
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Apply terraform plan
 apply:
   stage: apply
   image: hashicorp/terraform:latest
@@ -76,17 +127,334 @@ apply:
         INSTANCE_ID=$(terraform output -raw instance_id)
         echo "Instance ID: ${INSTANCE_ID}" > instance_info.txt
         echo "SSM connection command: aws ssm start-session --target ${INSTANCE_ID}" >> instance_info.txt
+        echo "K3s API access script: ${TF_ROOT}/access_k3s_api.sh" >> instance_info.txt
+        chmod +x ${TF_ROOT}/access_k3s_api.sh
       fi
   artifacts:
     paths:
       - ${TF_ROOT}/output/kubeconfig
       - ${TF_ROOT}/instance_info.txt
+      - ${TF_ROOT}/access_k3s_api.sh
     expire_in: 1 week
   dependencies:
     - plan
   when: manual
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Build and push container images to AWS ECR
+build_and_push_ecr:
+  stage: build
+  image: 
+    name: amazon/aws-cli:latest
+    entrypoint: [""]
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - amazon-linux-extras install docker
+    - aws --version
+    - docker --version
+  script:
+    - cd ${DOCKER_DIR}
+    # Get AWS account ID
+    - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+    # Create ECR repositories if they don't exist
+    - |
+      for repo in frontend backend database; do
+        aws ecr describe-repositories --repository-names "${ECR_REPO_PREFIX}/${repo}" --region ${AWS_REGION} || \
+        aws ecr create-repository --repository-name "${ECR_REPO_PREFIX}/${repo}" --region ${AWS_REGION}
+      done
+    # Authenticate Docker with ECR
+    - aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+    # Build images
+    - |
+      for service in frontend backend database; do
+        echo "Building ${service} image..."
+        docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_PREFIX}/${service}:${CONTAINER_TAG} ./${service}
+        echo "Pushing ${service} image to ECR..."
+        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_PREFIX}/${service}:${CONTAINER_TAG}
+      done
+    # Create values file for Helm with ECR image references
+    - |
+      cat > ${HELM_DIR}/values-ecr.yaml << EOF
+      containers:
+        frontend:
+          image:
+            repository: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_PREFIX}/frontend
+            tag: ${CONTAINER_TAG}
+        backend:
+          image:
+            repository: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_PREFIX}/backend
+            tag: ${CONTAINER_TAG}
+        database:
+          image:
+            repository: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_PREFIX}/database
+            tag: ${CONTAINER_TAG}
+      EOF
+  artifacts:
+    paths:
+      - ${HELM_DIR}/values-ecr.yaml
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $USE_ECR == "true"
+  when: manual
+
+# Build and push container images to Artifactory
+build_and_push_artifactory:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apk add --no-cache bash curl
+    - docker --version
+  script:
+    - cd ${DOCKER_DIR}
+    # Authenticate Docker with Artifactory
+    - echo "${ARTIFACTORY_PASSWORD}" | docker login ${ARTIFACTORY_URL} --username ${ARTIFACTORY_USERNAME} --password-stdin
+    # Build images
+    - |
+      for service in frontend backend database; do
+        echo "Building ${service} image..."
+        docker build -t ${ARTIFACTORY_URL}/${ARTIFACTORY_REPO}/${ECR_REPO_PREFIX}/${service}:${CONTAINER_TAG} ./${service}
+        echo "Pushing ${service} image to Artifactory..."
+        docker push ${ARTIFACTORY_URL}/${ARTIFACTORY_REPO}/${ECR_REPO_PREFIX}/${service}:${CONTAINER_TAG}
+      done
+    # Create values file for Helm with Artifactory image references
+    - |
+      cat > ${HELM_DIR}/values-artifactory.yaml << EOF
+      containers:
+        frontend:
+          image:
+            repository: ${ARTIFACTORY_URL}/${ARTIFACTORY_REPO}/${ECR_REPO_PREFIX}/frontend
+            tag: ${CONTAINER_TAG}
+        backend:
+          image:
+            repository: ${ARTIFACTORY_URL}/${ARTIFACTORY_REPO}/${ECR_REPO_PREFIX}/backend
+            tag: ${CONTAINER_TAG}
+        database:
+          image:
+            repository: ${ARTIFACTORY_URL}/${ARTIFACTORY_REPO}/${ECR_REPO_PREFIX}/database
+            tag: ${CONTAINER_TAG}
+      EOF
+  artifacts:
+    paths:
+      - ${HELM_DIR}/values-artifactory.yaml
+    expire_in: 1 week
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $USE_ARTIFACTORY == "true"
+  when: manual
+
+# Deploy the Helm chart with ECR images
+deploy_from_ecr:
+  stage: deploy
+  image:
+    name: alpine/k8s:1.25.16
+    entrypoint: [""]
+  script:
+    - mkdir -p ~/.kube
+    - cp ${KUBECONFIG_PATH} ~/.kube/config
+    # Fix localhost in kubeconfig - replace with the actual IP
+    - |
+      KUBE_HOST=$(grep -o 'server: https://.*:6443' ~/.kube/config | sed 's/server: https:\/\///')
+      if [[ "$KUBE_HOST" == "127.0.0.1:6443" || "$KUBE_HOST" == "localhost:6443" ]]; then
+        # Get the instance private IP from terraform output
+        cd ${TF_ROOT}
+        INSTANCE_IP=$(terraform output -raw k3s_server_ip)
+        sed -i "s/server: https:\/\/127.0.0.1:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+        sed -i "s/server: https:\/\/localhost:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+      fi
+    # Wait for the cluster to be ready
+    - kubectl wait --for=condition=ready node --all --timeout=300s || true
+    # Install the Helm chart with ECR images
+    - cd ${HELM_DIR}
+    - helm upgrade --install multi-container-app . -f values-ecr.yaml --wait --timeout 300s
+    # Get status of the deployment
+    - kubectl get nodes -o wide
+    - kubectl get pods -o wide
+    - kubectl get svc -o wide
+    - kubectl get pvc -o wide
+    - kubectl get ingress -o wide
+  dependencies:
+    - apply
+    - build_and_push_ecr
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $USE_ECR == "true"
+  artifacts:
+    paths:
+      - ${CI_PROJECT_DIR}/k8s-status.txt
+    expire_in: 1 week
+
+# Deploy the Helm chart with Artifactory images
+deploy_from_artifactory:
+  stage: deploy
+  image:
+    name: alpine/k8s:1.25.16
+    entrypoint: [""]
+  script:
+    - mkdir -p ~/.kube
+    - cp ${KUBECONFIG_PATH} ~/.kube/config
+    # Fix localhost in kubeconfig - replace with the actual IP
+    - |
+      KUBE_HOST=$(grep -o 'server: https://.*:6443' ~/.kube/config | sed 's/server: https:\/\///')
+      if [[ "$KUBE_HOST" == "127.0.0.1:6443" || "$KUBE_HOST" == "localhost:6443" ]]; then
+        # Get the instance private IP from terraform output
+        cd ${TF_ROOT}
+        INSTANCE_IP=$(terraform output -raw k3s_server_ip)
+        sed -i "s/server: https:\/\/127.0.0.1:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+        sed -i "s/server: https:\/\/localhost:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+      fi
+    # Wait for the cluster to be ready
+    - kubectl wait --for=condition=ready node --all --timeout=300s || true
+    # Install the Helm chart with Artifactory images
+    - cd ${HELM_DIR}
+    - helm upgrade --install multi-container-app . -f values-artifactory.yaml --wait --timeout 300s
+    # Get status of the deployment
+    - kubectl get nodes -o wide
+    - kubectl get pods -o wide
+    - kubectl get svc -o wide
+    - kubectl get pvc -o wide
+    - kubectl get ingress -o wide
+  dependencies:
+    - apply
+    - build_and_push_artifactory
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $USE_ARTIFACTORY == "true"
+  artifacts:
+    paths:
+      - ${CI_PROJECT_DIR}/k8s-status.txt
+    expire_in: 1 week
+
+# Deploy the Helm chart with default images (for when not using ECR or Artifactory)
+deploy_application:
+  stage: deploy
+  image:
+    name: alpine/k8s:1.25.16
+    entrypoint: [""]
+  script:
+    - mkdir -p ~/.kube
+    - cp ${KUBECONFIG_PATH} ~/.kube/config
+    # Fix localhost in kubeconfig - replace with the actual IP
+    - |
+      KUBE_HOST=$(grep -o 'server: https://.*:6443' ~/.kube/config | sed 's/server: https:\/\///')
+      if [[ "$KUBE_HOST" == "127.0.0.1:6443" || "$KUBE_HOST" == "localhost:6443" ]]; then
+        # Get the instance private IP from terraform output
+        cd ${TF_ROOT}
+        INSTANCE_IP=$(terraform output -raw k3s_server_ip)
+        sed -i "s/server: https:\/\/127.0.0.1:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+        sed -i "s/server: https:\/\/localhost:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+      fi
+    # Wait for the cluster to be ready
+    - kubectl wait --for=condition=ready node --all --timeout=300s || true
+    # Install the Helm chart with default images
+    - cd ${HELM_DIR}
+    - helm upgrade --install multi-container-app . --wait --timeout 300s
+    # Get status of the deployment
+    - kubectl get nodes -o wide
+    - kubectl get pods -o wide
+    - kubectl get svc -o wide
+    - kubectl get pvc -o wide
+    - kubectl get ingress -o wide
+  dependencies:
+    - apply
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $USE_ECR != "true" && $USE_ARTIFACTORY != "true"
+  artifacts:
+    paths:
+      - ${CI_PROJECT_DIR}/k8s-status.txt
+    expire_in: 1 week
+
+# Test the deployment
+test_application:
+  stage: test
+  image:
+    name: alpine/k8s:1.25.16
+    entrypoint: [""]
+  script:
+    - mkdir -p ~/.kube
+    - cp ${KUBECONFIG_PATH} ~/.kube/config
+    # Fix localhost in kubeconfig - replace with the actual IP
+    - |
+      KUBE_HOST=$(grep -o 'server: https://.*:6443' ~/.kube/config | sed 's/server: https:\/\///')
+      if [[ "$KUBE_HOST" == "127.0.0.1:6443" || "$KUBE_HOST" == "localhost:6443" ]]; then
+        # Get the instance private IP from terraform output
+        cd ${TF_ROOT}
+        INSTANCE_IP=$(terraform output -raw k3s_server_ip)
+        sed -i "s/server: https:\/\/127.0.0.1:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+        sed -i "s/server: https:\/\/localhost:6443/server: https:\/\/${INSTANCE_IP}:6443/g" ~/.kube/config
+      fi
+    # Test the application
+    - echo "Testing multi-container application..."
+    # Check if all pods are running
+    - |
+      MAX_RETRIES=10
+      RETRY_COUNT=0
+      while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        POD_STATUS=$(kubectl get pods -l app.kubernetes.io/name=multi-container-app -o jsonpath='{.items[0].status.phase}')
+        if [ "$POD_STATUS" == "Running" ]; then
+          echo "Pod is running!"
+          break
+        fi
+        echo "Pod is not yet running. Status: $POD_STATUS. Retrying in 10 seconds..."
+        RETRY_COUNT=$((RETRY_COUNT+1))
+        sleep 10
+      done
+      if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        echo "Max retries reached. Pod is not running."
+        kubectl describe pods -l app.kubernetes.io/name=multi-container-app
+        exit 1
+      fi
+    # Generate test report
+    - |
+      echo "Test Report" > test_report.txt
+      echo "============" >> test_report.txt
+      echo "" >> test_report.txt
+      echo "Pods:" >> test_report.txt
+      kubectl get pods -o wide >> test_report.txt
+      echo "" >> test_report.txt
+      echo "Services:" >> test_report.txt
+      kubectl get svc -o wide >> test_report.txt
+      echo "" >> test_report.txt
+      echo "Pod Logs:" >> test_report.txt
+      POD_NAME=$(kubectl get pods -l app.kubernetes.io/name=multi-container-app -o jsonpath='{.items[0].metadata.name}')
+      kubectl logs $POD_NAME -c frontend >> test_report.txt
+      kubectl logs $POD_NAME -c backend >> test_report.txt
+      kubectl logs $POD_NAME -c database >> test_report.txt
+      echo "" >> test_report.txt
+      echo "Container Communication:" >> test_report.txt
+      echo "The containers are communicating with each other within the pod." >> test_report.txt
+      echo "To view the visualization dashboard, access the application's frontend." >> test_report.txt
+      echo "" >> test_report.txt
+      echo "Access Instructions:" >> test_report.txt
+      echo "1. For direct access from outside the private subnet," >> test_report.txt
+      echo "   run: ${TF_ROOT}/access_k3s_api.sh" >> test_report.txt
+      echo "2. Then in another terminal, set up port forwarding to the frontend:" >> test_report.txt
+      echo "   kubectl port-forward svc/multi-container-app 8080:8080" >> test_report.txt
+      echo "3. Open http://localhost:8080 in your browser" >> test_report.txt
+    # Save test report
+    - cat test_report.txt
+  dependencies:
+    - deploy_application
+    - deploy_from_ecr
+    - deploy_from_artifactory
+  when: manual
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  artifacts:
+    paths:
+      - test_report.txt
+    expire_in: 1 week
 
 # Destroy infrastructure (manual trigger)
 destroy:
@@ -96,23 +464,6 @@ destroy:
   script:
     - terraform destroy -auto-approve
   dependencies: []
-  when: manual
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-# Optional: Add a stage to test Kubernetes connection
-test_connection:
-  stage: apply
-  image:
-    name: bitnami/kubectl:latest
-    entrypoint: [""]
-  script:
-    - mkdir -p ~/.kube
-    - cp ${TF_ROOT}/output/kubeconfig ~/.kube/config
-    - kubectl get nodes
-    - kubectl get pods --all-namespaces
-  dependencies:
-    - apply
   when: manual
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

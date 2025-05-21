@@ -1,0 +1,197 @@
+# Default values for multi-container-app
+# 
+# CONTAINER REPLACEMENT GUIDE:
+# To replace the containers with your own images, update the image repository and tag
+# settings in the containers section below. You can build custom containers from the
+# Dockerfiles in the docker/ directory using the build-and-push.sh script.
+replicaCount: 1
+
+# Common labels
+commonLabels:
+  app: multi-container-app
+  environment: development
+
+# Service account configuration
+serviceAccount:
+  create: true
+  name: "multi-container-app"
+  annotations: {}
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+  hosts:
+    - host: ""  # Set to your domain or leave empty for IP-based access
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Persistence configuration
+persistence:
+  enabled: true
+  storageClass: "local-path"  # K3s default storage class
+  size: 1Gi
+  mountPath: /data
+
+# Container configurations
+containers:
+  # Frontend container
+  frontend:
+    name: frontend
+    image:
+      repository: nginx
+      tag: alpine
+      pullPolicy: IfNotPresent
+    ports:
+      - containerPort: 80
+        name: http
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    livenessProbe:
+      httpGet:
+        path: /
+        port: 80
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /
+        port: 80
+      initialDelaySeconds: 5
+      periodSeconds: 5
+    volumeMounts:
+      - name: shared-data
+        mountPath: /usr/share/nginx/html/data
+    env:
+      - name: API_URL
+        value: http://localhost:8080/api
+
+  # Backend API container
+  backend:
+    name: backend
+    image:
+      repository: python
+      tag: 3.9-alpine
+      pullPolicy: IfNotPresent
+    command: 
+      - "python"
+      - "-m"
+      - "http.server"
+      - "8080"
+    ports:
+      - containerPort: 8080
+        name: api
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    livenessProbe:
+      httpGet:
+        path: /
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 5
+    volumeMounts:
+      - name: shared-data
+        mountPath: /data
+    env:
+      - name: DATABASE_URL
+        value: http://localhost:5432
+      - name: LOG_LEVEL
+        value: "info"
+
+  # Database container
+  database:
+    name: database
+    image:
+      repository: postgres
+      tag: 14-alpine
+      pullPolicy: IfNotPresent
+    ports:
+      - containerPort: 5432
+        name: postgres
+    resources:
+      limits:
+        cpu: 300m
+        memory: 512Mi
+      requests:
+        cpu: 150m
+        memory: 256Mi
+    livenessProbe:
+      exec:
+        command:
+          - pg_isready
+          - -U
+          - postgres
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    readinessProbe:
+      exec:
+        command:
+          - pg_isready
+          - -U
+          - postgres
+      initialDelaySeconds: 5
+      periodSeconds: 5
+    volumeMounts:
+      - name: postgres-data
+        mountPath: /var/lib/postgresql/data
+    env:
+      - name: POSTGRES_USER
+        value: postgres
+      - name: POSTGRES_PASSWORD
+        value: postgres  # Should be replaced with a secret in production
+      - name: POSTGRES_DB
+        value: app_database
+
+# Network policy to allow pods to communicate with each other
+networkPolicy:
+  enabled: true
+
+# Monitoring configuration for Prometheus
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    scrapeInterval: 15s
+
+# Create additional volumes for data
+volumes:
+  - name: shared-data
+    persistentVolumeClaim:
+      claimName: shared-data-pvc
+  - name: postgres-data
+    persistentVolumeClaim:
+      claimName: postgres-data-pvc

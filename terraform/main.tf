@@ -112,11 +112,40 @@ resource "aws_instance" "k3s_node" {
               systemctl start amazon-ssm-agent
 
               ${var.skip_k3s_install ? "" : <<-K3S_SETUP
-              # Install K3s
+              # Install dependencies
+              apt-get update
+              apt-get install -y open-iscsi nfs-common
+              systemctl enable iscsid && systemctl start iscsid
+              
+              # Configure custom K3s installation
+              mkdir -p /etc/rancher/k3s
+              cat > /etc/rancher/k3s/config.yaml << EOF
+              # K3s server configuration
+              token: "auto-generated-token"
+              node-name: ${var.instance_name}
+              tls-san:
+                - ${var.instance_name}
+              disable:
+                - traefik # We'll use our own ingress
+              kube-controller-manager-arg:
+                - "bind-address=0.0.0.0" # Enable metrics access
+              kube-scheduler-arg:
+                - "bind-address=0.0.0.0" # Enable metrics access
+              kube-proxy-arg:
+                - "metrics-bind-address=0.0.0.0" # Enable metrics access
+              flannel-backend: "vxlan"
+              # Enable default StorageClass
+              default-local-storage-path: /opt/local-path-provisioner
+              # Write kubeconfig to accessible location
+              write-kubeconfig-mode: "0644"
+              write-kubeconfig: /tmp/kubeconfig
+              EOF
+              
+              # Install K3s server
               curl -sfL https://get.k3s.io | sh -
               
               # Wait for K3s to start
-              sleep 30
+              sleep 45
               
               # Get K3s token for later use
               K3S_TOKEN=$(cat /var/lib/rancher/k3s/server/node-token)
@@ -127,9 +156,34 @@ resource "aws_instance" "k3s_node" {
               # Ensure k3s is running
               systemctl status k3s
               
-              # Copy kubeconfig to accessible location
+              # Install Helm
+              curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+              
+              # Make kubectl and kubeconfig accessible to standard users
+              chmod 644 /etc/rancher/k3s/k3s.yaml
               cp /etc/rancher/k3s/k3s.yaml /tmp/kubeconfig
               chmod 644 /tmp/kubeconfig
+              
+              # Install Kubernetes metrics server
+              kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+              
+              # Set up persistent storage class using local-path-provisioner (already included in K3s)
+              # This ensures our application deployments have persistent storage available
+              
+              # Set up ingress-nginx
+              helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+              helm repo update
+              helm install ingress-nginx ingress-nginx/ingress-nginx --create-namespace --namespace ingress-nginx
+              
+              # Export k3s API endpoint for external access
+              PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
+              echo "K3S_API_ENDPOINT=https://$PRIVATE_IP:6443" > /tmp/k3s-api-endpoint
+              
+              # Wait for ingress controller to be ready
+              kubectl wait --namespace ingress-nginx \
+                --for=condition=ready pod \
+                --selector=app.kubernetes.io/component=controller \
+                --timeout=180s
               K3S_SETUP
               }
 

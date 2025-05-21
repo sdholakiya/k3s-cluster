@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Container Communication Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .container { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; }
+    .communication { margin: 10px 0; padding: 5px; background-color: #f0f0f0; }
+    .success { color: green; }
+    .error { color: red; }
+  </style>
+  <script>
+    // Simple dashboard to demonstrate inter-container communication
+    function checkCommunication() {
+      // In a real application, these would be API calls to the backend endpoints
+      const frontendToBackend = { 
+        from: 'frontend', 
+        to: 'backend', 
+        success: Math.random() > 0.1,
+        data: 'GET /api/items'
+      };
+      
+      const backendToDatabase = { 
+        from: 'backend', 
+        to: 'database', 
+        success: Math.random() > 0.1,
+        data: 'SELECT * FROM items'
+      };
+      
+      const databaseToBackend = { 
+        from: 'database', 
+        to: 'backend', 
+        success: Math.random() > 0.1,
+        data: 'Result: 42 rows'
+      };
+      
+      const backendToFrontend = { 
+        from: 'backend', 
+        to: 'frontend', 
+        success: Math.random() > 0.1,
+        data: 'JSON response with 42 items'
+      };
+      
+      displayCommunication(frontendToBackend);
+      setTimeout(() => displayCommunication(backendToDatabase), 500);
+      setTimeout(() => displayCommunication(databaseToBackend), 1000);
+      setTimeout(() => displayCommunication(backendToFrontend), 1500);
+    }
+    
+    function displayCommunication(comm) {
+      const container = document.getElementById('communications');
+      const div = document.createElement('div');
+      div.className = 'communication ' + (comm.success ? 'success' : 'error');
+      const timestamp = new Date().toLocaleTimeString();
+      div.textContent = `[${timestamp}] ${comm.from} → ${comm.to}: ${comm.data} (${comm.success ? 'SUCCESS' : 'ERROR'})`;
+      container.prepend(div);
+      
+      // Limit to last 20 messages
+      const messages = container.getElementsByClassName('communication');
+      if (messages.length > 20) {
+        container.removeChild(messages[messages.length - 1]);
+      }
+    }
+    
+    // Start monitoring upon page load
+    window.onload = function() {
+      checkCommunication();
+      setInterval(checkCommunication, 2000);
+    };
+  </script>
+</head>
+<body>
+  <h1>Container Communication Visualizer</h1>
+  <div class="container">
+    <h2>Architecture</h2>
+    <pre>
+    ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+    │             │         │             │         │             │
+    │   Frontend  │◄────────►   Backend   │◄────────►  Database   │
+    │  (Nginx)    │         │  (Python)   │         │ (Postgres)  │
+    │             │         │             │         │             │
+    └─────────────┘         └─────────────┘         └─────────────┘
+    </pre>
+  </div>
+  
+  <div class="container">
+    <h2>Live Communication (last 20 events)</h2>
+    <div id="communications">
+      <!-- Dynamic content will be added here -->
+    </div>
+  </div>
+</body>
+</html>

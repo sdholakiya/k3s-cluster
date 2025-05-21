@@ -11,6 +11,11 @@ This project automatically deploys a K3s Kubernetes cluster on an AWS EC2 instan
 - Advanced EC2 instance configuration options
 - SSM-based management (no need for SSH)
 - Remote state management with S3 and DynamoDB
+- Multi-container application deployments using Helm
+- Communication visualization between containers
+- Access to K3s API from outside private subnet
+- GitLab CI/CD pipeline for automated deployment
+- Monitoring setup for container communication
 
 ## Prerequisites
 
@@ -18,6 +23,7 @@ This project automatically deploys a K3s Kubernetes cluster on an AWS EC2 instan
 2. GitLab repository with CI/CD capabilities
 3. AWS CLI installed and configured for using SSM
 4. For GovCloud: AWS GovCloud credentials configured
+5. Helm installed (v3+) for local deployments
 
 ## AWS Authentication
 
@@ -47,6 +53,23 @@ chmod +x aws_sso_credentials.sh
    - `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key
    - `AWS_SESSION_TOKEN`: Your AWS session token (if using temporary credentials from SSO)
    - `AWS_DEFAULT_REGION`: Your preferred AWS region
+   - `TF_VAR_terraform_state_bucket`: S3 bucket name for Terraform state
+   - `TF_VAR_vpc_id`: Your VPC ID
+   - `TF_VAR_subnet_id`: Your subnet ID
+   - `TF_VAR_security_group_id`: Your security group ID
+   
+   For container registry access (choose one option):
+   
+   **For AWS ECR:**
+   - `USE_ECR`: Set to "true" to enable ECR image builds
+   - AWS credentials from above are reused for ECR access
+   
+   **For Artifactory:**
+   - `USE_ARTIFACTORY`: Set to "true" to enable Artifactory image builds
+   - `ARTIFACTORY_URL`: Your Artifactory instance URL
+   - `ARTIFACTORY_REPO`: Your Artifactory Docker repository name
+   - `ARTIFACTORY_USERNAME`: Your Artifactory username
+   - `ARTIFACTORY_PASSWORD`: Your Artifactory password/API key
 
 3. You can use the included setup script to automatically set these variables:
 
@@ -136,8 +159,10 @@ The GitLab CI/CD pipeline includes these stages:
 1. **Validate**: Validates Terraform configuration and checks formatting
 2. **Plan**: Creates a Terraform plan and stores it as an artifact
 3. **Apply**: Deploys infrastructure (manual trigger) and retrieves kubeconfig
-4. **Destroy**: Removes infrastructure (manual trigger)
-5. **Test Connection**: Optional stage to verify Kubernetes connectivity
+4. **Build**: Builds and pushes container images to your selected registry (ECR or Artifactory)
+5. **Deploy**: Deploys the Helm chart with the multi-container application using the custom images
+6. **Test**: Tests the deployment and generates a test report
+7. **Destroy**: Removes infrastructure (manual trigger)
 
 ### Running the Pipeline
 
@@ -145,10 +170,19 @@ The GitLab CI/CD pipeline includes these stages:
    - Pushes to the main branch
    - Merge/Pull Requests
 
-2. The **Apply** and **Destroy** stages require manual approval in the GitLab UI:
+2. The **Apply**, **Build**, **Deploy**, **Test**, and **Destroy** stages require manual approval in the GitLab UI:
    - Go to CI/CD → Pipelines in your GitLab project
    - Find your pipeline and click on it
-   - Click the "Play" button next to the "apply" job to deploy
+   - Click the "Play" button next to the "apply" job to deploy infrastructure
+   - After successful deployment, trigger the appropriate build job:
+     - For ECR: Trigger "build_and_push_ecr" job
+     - For Artifactory: Trigger "build_and_push_artifactory" job
+     - Skip this step to use default images
+   - Next, trigger the appropriate deploy job:
+     - For ECR: Trigger "deploy_from_ecr" job
+     - For Artifactory: Trigger "deploy_from_artifactory" job
+     - For default images: Trigger "deploy_application" job
+   - Test the application by triggering the "test_application" job
    - Click the "Play" button next to the "destroy" job to tear down
 
 3. After successful deployment, the kubeconfig and instance info will be available as pipeline artifacts
@@ -175,6 +209,118 @@ kubectl get nodes
 # Or connect directly
 aws ssm start-session --target <instance-id>
 ```
+
+### Accessing the K3s API from Outside the Private Subnet
+
+To access the K3s API from outside the private subnet:
+
+1. Use the access script that creates an SSM port forwarding tunnel:
+   ```bash
+   ./terraform/access_k3s_api.sh
+   ```
+
+2. Keep the terminal with the port forwarding session open
+
+3. In a new terminal, configure kubectl to use the local endpoint:
+   ```bash
+   export KUBECONFIG=/path/to/terraform/output/kubeconfig
+   kubectl config set-cluster default --server=https://localhost:6443
+   ```
+
+4. Test the connection:
+   ```bash
+   kubectl get nodes
+   ```
+
+## Multi-Container Application
+
+### Custom Container Images
+
+The project includes Dockerfiles and configuration to build your own custom container images:
+
+```
+docker/
+├── docker-compose.yml           # Defines all three containers
+├── build-and-push.sh            # Script for generic registries
+├── ecr-push.sh                  # Script for AWS ECR
+├── artifactory-push.sh          # Script for Artifactory
+├── frontend/                    # Frontend container (Nginx)
+├── backend/                     # Backend container (Python Flask)
+└── database/                    # Database container (PostgreSQL)
+```
+
+The project supports multiple container registry options:
+
+#### Generic Container Registry
+
+```bash
+cd docker
+./build-and-push.sh your-registry.example.com v1.0.0
+```
+
+#### AWS ECR (Elastic Container Registry)
+
+```bash
+cd docker
+./ecr-push.sh us-west-2 123456789012 k3s-app v1.0.0
+```
+
+#### JFrog Artifactory
+
+```bash
+cd docker
+./artifactory-push.sh https://artifactory.example.com docker-local myuser mypassword k3s-app v1.0.0
+```
+
+After pushing your images, update the Helm chart's `values.yaml` with your image references or use the automatically generated values files in the CI/CD pipeline.
+
+For more details, see the [Docker README](docker/README.md).
+
+### Helm Chart Structure
+
+The project includes a Helm chart for deploying a multi-container application:
+
+```
+helm/multi-container-app/
+├── Chart.yaml
+├── templates/
+│   ├── _helpers.tpl
+│   ├── configmap.yaml
+│   ├── deployment.yaml
+│   ├── ingress.yaml
+│   ├── networkpolicy.yaml
+│   ├── pvc.yaml
+│   ├── service.yaml
+│   ├── serviceaccount.yaml
+│   └── servicemonitor.yaml
+└── values.yaml
+```
+
+### Container Configuration
+
+The Helm chart deploys three containers in a single pod:
+
+1. **Frontend** (Nginx): Serves the web interface and container communication dashboard
+2. **Backend** (Python): Processes API requests
+3. **Database** (PostgreSQL): Stores application data
+
+All containers communicate with each other within the pod, demonstrating inter-container communication patterns.
+
+### Monitoring Container Communication
+
+The deployment includes a visual dashboard that shows the communication between containers:
+
+1. Forward the application port to your local machine:
+   ```bash
+   kubectl port-forward svc/multi-container-app 8080:8080
+   ```
+
+2. Open a browser and navigate to:
+   ```
+   http://localhost:8080
+   ```
+
+3. The dashboard will show real-time visualization of container communication.
 
 ## Terraform Configuration Variables
 
@@ -217,6 +363,15 @@ aws ssm start-session --target <instance-id>
 | `root_volume_iops` | Root volume IOPS | `null` |
 | `root_volume_throughput` | Root volume throughput | `null` |
 | `additional_ebs_volumes` | Additional EBS volumes | `[]` |
+
+### Terraform State Configuration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `terraform_state_bucket` | S3 bucket for Terraform state | Required |
+| `terraform_state_key` | S3 key for Terraform state | `"k3s-cluster/terraform.tfstate"` |
+| `terraform_state_region` | AWS region for Terraform state | `"us-west-2"` |
+| `terraform_state_dynamodb_table` | DynamoDB table for state locking | `"terraform-state-lock"` |
 
 ## Notes for GovCloud Deployment
 

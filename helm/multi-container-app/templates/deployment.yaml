@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "multi-container-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "multi-container-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "multi-container-app.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.monitoring.enabled }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+        {{- end }}
+    spec:
+      {{- with .Values.serviceAccount.name }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        # Frontend container
+        - name: {{ .Values.containers.frontend.name }}
+          image: "{{ .Values.containers.frontend.image.repository }}:{{ .Values.containers.frontend.image.tag }}"
+          imagePullPolicy: {{ .Values.containers.frontend.image.pullPolicy }}
+          ports:
+            {{- toYaml .Values.containers.frontend.ports | nindent 12 }}
+          resources:
+            {{- toYaml .Values.containers.frontend.resources | nindent 12 }}
+          {{- if .Values.containers.frontend.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.containers.frontend.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.containers.frontend.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.containers.frontend.readinessProbe | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: dashboard-config
+              mountPath: /usr/share/nginx/html/index.html
+              subPath: index.html
+            {{- toYaml .Values.containers.frontend.volumeMounts | nindent 12 }}
+          env:
+            {{- toYaml .Values.containers.frontend.env | nindent 12 }}
+        
+        # Backend API container
+        - name: {{ .Values.containers.backend.name }}
+          image: "{{ .Values.containers.backend.image.repository }}:{{ .Values.containers.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.containers.backend.image.pullPolicy }}
+          {{- if .Values.containers.backend.command }}
+          command:
+            {{- toYaml .Values.containers.backend.command | nindent 12 }}
+          {{- end }}
+          ports:
+            {{- toYaml .Values.containers.backend.ports | nindent 12 }}
+          resources:
+            {{- toYaml .Values.containers.backend.resources | nindent 12 }}
+          {{- if .Values.containers.backend.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.containers.backend.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.containers.backend.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.containers.backend.readinessProbe | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- toYaml .Values.containers.backend.volumeMounts | nindent 12 }}
+          env:
+            {{- toYaml .Values.containers.backend.env | nindent 12 }}
+        
+        # Database container
+        - name: {{ .Values.containers.database.name }}
+          image: "{{ .Values.containers.database.image.repository }}:{{ .Values.containers.database.image.tag }}"
+          imagePullPolicy: {{ .Values.containers.database.image.pullPolicy }}
+          ports:
+            {{- toYaml .Values.containers.database.ports | nindent 12 }}
+          resources:
+            {{- toYaml .Values.containers.database.resources | nindent 12 }}
+          {{- if .Values.containers.database.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.containers.database.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.containers.database.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.containers.database.readinessProbe | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- toYaml .Values.containers.database.volumeMounts | nindent 12 }}
+          env:
+            {{- toYaml .Values.containers.database.env | nindent 12 }}
+      
+      volumes:
+        # ConfigMap volume for visualization dashboard
+        - name: dashboard-config
+          configMap:
+            name: {{ .Release.Name }}-communication-visualizer
+        {{- toYaml .Values.volumes | nindent 8 }}

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: multi-container-app
+description: A Helm chart for deploying a multi-container application with 3 containers in a single pod
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: "K3s Cluster Admin"
