@@ -11,10 +11,22 @@ resource "aws_ssm_document" "k3s_api_port_forward" {
     schemaVersion = "1.0"
     description   = "Port forwarding session to K3s API endpoint"
     sessionType   = "Port"
-    inputs = {
-      portNumber             = ["6443"]
-      localPortNumber        = ["6443"]
-      portForwardingSessionTimeout = "60"
+    parameters = {
+      portNumber = {
+        type = "String",
+        description = "Port number of K3s API server",
+        default = "6443"
+      },
+      localPortNumber = {
+        type = "String",
+        description = "Local port number",
+        default = "6443"
+      }
+    },
+    properties = {
+      portNumber = "{{ portNumber }}",
+      localPortNumber = "{{ localPortNumber }}",
+      type = "LocalPortForwarding"
     }
   })
 
@@ -71,7 +83,7 @@ resource "local_file" "k3s_api_access_script" {
     aws ssm start-session \
         --target $INSTANCE_ID \
         --document-name K3sApiPortForward \
-        --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}'
+        --parameters 'portNumber=6443,localPortNumber=6443'
     
     echo "Port forwarding session ended"
   EOT
