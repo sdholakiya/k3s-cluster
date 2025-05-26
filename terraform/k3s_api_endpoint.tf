@@ -1,6 +1,10 @@
 # K3s API Endpoint Access Configuration
 # This file defines resources to access the K3s API endpoint from outside the private subnet
 
+locals {
+  instance_id = var.skip_ec2_creation ? data.aws_instance.existing[0].id : aws_instance.k3s_node[0].id
+}
+
 # SSM Port Forwarding Document for K3s API Access
 resource "aws_ssm_document" "k3s_api_port_forward" {
   name            = "K3sApiPortForward"
@@ -52,7 +56,7 @@ resource "aws_iam_policy" "k3s_api_access" {
           "ssm:ResumeSession"
         ]
         Resource = [
-          "arn:${local.aws_partition}:ec2:${var.aws_region}:*:instance/${var.skip_ec2_creation ? data.aws_instance.existing[0].id : aws_instance.k3s_node[0].id}",
+          "arn:${local.aws_partition}:ec2:${var.aws_region}:*:instance/${local.instance_id}",
           "arn:${local.aws_partition}:ssm:${var.aws_region}:*:document/K3sApiPortForward"
         ]
       }
@@ -73,7 +77,7 @@ resource "local_file" "k3s_api_access_script" {
     fi
     
     # Set instance ID - this is the K3s server instance
-    INSTANCE_ID="${var.skip_ec2_creation ? data.aws_instance.existing[0].id : aws_instance.k3s_node[0].id}"
+    INSTANCE_ID="${local.instance_id}"
     
     # Start port forwarding session
     echo "Starting port forwarding session to K3s API endpoint..."

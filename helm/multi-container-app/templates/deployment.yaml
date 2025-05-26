@@ -81,6 +81,8 @@ spec:
         - name: {{ .Values.containers.database.name }}
           image: "{{ .Values.containers.database.image.repository }}:{{ .Values.containers.database.image.tag }}"
           imagePullPolicy: {{ .Values.containers.database.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
           ports:
             {{- toYaml .Values.containers.database.ports | nindent 12 }}
           resources:

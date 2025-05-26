@@ -11,8 +11,8 @@ subnet_id             = "subnet-xxxxxxxxxxxxxxxxx"
 security_group_id     = "sg-xxxxxxxxxxxxxxxxx"
 
 # IAM configuration
-create_iam_role       = true        # Set to true to create a new role with SSM permissions
-iam_instance_profile  = ""          # Existing profile name (ignored if create_iam_role = true)
+create_iam_role       = false       # Set to true to create a new role with SSM permissions
+iam_instance_profile  = "your-existing-instance-profile-name"  # Existing profile name (ignored if create_iam_role = true)
 
 # Instance configuration
 ami_id                = "ami-0ee02ddf90e99f238"  # Ubuntu 22.04 LTS in us-west-2

@@ -69,7 +69,7 @@ resource "aws_instance" "k3s_node" {
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [var.security_group_id]
   associate_public_ip_address = false
-  iam_instance_profile        = var.create_iam_role ? aws_iam_instance_profile.ssm_profile[0].name : var.iam_instance_profile
+  iam_instance_profile        = var.create_iam_role ? aws_iam_instance_profile.ssm_profile[0].name : (var.iam_instance_profile != "" ? var.iam_instance_profile : null)
   key_name                    = var.use_ssm ? null : var.key_name
   monitoring                  = var.enable_detailed_monitoring
 

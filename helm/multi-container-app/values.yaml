@@ -19,9 +19,9 @@ serviceAccount:
 
 # Pod security context
 podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 1000
-  runAsGroup: 1000
+  runAsNonRoot: false
+  # runAsUser: 1000
+  # runAsGroup: 1000
   fsGroup: 1000
 
 # Service configuration
@@ -182,9 +182,9 @@ networkPolicy:
 
 # Monitoring configuration for Prometheus
 monitoring:
-  enabled: true
+  enabled: false
   serviceMonitor:
-    enabled: true
+    enabled: false
     scrapeInterval: 15s
 
 # Create additional volumes for data
