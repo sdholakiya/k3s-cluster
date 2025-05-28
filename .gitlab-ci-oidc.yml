@@ -1,0 +1,209 @@
+# GitLab CI/CD Pipeline for K3s Cluster with OIDC Authentication
+# Uses IAM roles instead of stored credentials for enhanced security
+
+variables:
+  # AWS Configuration
+  AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-west-2}"
+  
+  # Terraform Configuration
+  TF_ROOT: "${CI_PROJECT_DIR}/terraform"
+  TF_STATE_NAME: "default"
+  
+  # Container Registry Configuration
+  ECR_REPO_PREFIX: "${ECR_REPO_PREFIX:-k3s-app}"
+  
+  # Docker Configuration
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+
+# Default image with AWS CLI and Terraform
+default:
+  image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+
+# Stages definition
+stages:
+  - validate
+  - plan
+  - build
+  - deploy
+  - cleanup
+
+# Before script to assume AWS role using OIDC
+before_script:
+  - |
+    # Determine which role to assume based on branch
+    if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+      export AWS_ROLE_ARN="${GITLAB_CICD_MAIN_ROLE_ARN}"
+      echo "Using main branch role: $AWS_ROLE_ARN"
+    else
+      export AWS_ROLE_ARN="${GITLAB_CICD_FEATURE_ROLE_ARN}"
+      echo "Using feature branch role: $AWS_ROLE_ARN"
+    fi
+    
+    # Assume the role using OIDC web identity token
+    export AWS_WEB_IDENTITY_TOKEN_FILE="/tmp/web-identity-token"
+    echo "$CI_JOB_JWT_V2" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+    export AWS_ROLE_SESSION_NAME="gitlab-ci-${CI_JOB_ID}"
+    
+    # Configure AWS CLI to use the web identity token
+    aws configure set region $AWS_DEFAULT_REGION
+    aws configure set web_identity_token_file $AWS_WEB_IDENTITY_TOKEN_FILE
+    aws configure set role_arn $AWS_ROLE_ARN
+    aws configure set role_session_name $AWS_ROLE_SESSION_NAME
+    
+    # Verify AWS credentials
+    aws sts get-caller-identity
+
+# Terraform validation job
+terraform:validate:
+  stage: validate
+  script:
+    - cd $TF_ROOT
+    - terraform fmt -check
+    - terraform init -backend=false
+    - terraform validate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH =~ /^feature\/.*/
+
+# Terraform plan job (all branches)
+terraform:plan:
+  stage: plan
+  script:
+    - cd $TF_ROOT
+    - terraform init
+    - terraform plan -input=false -out=tfplan
+  artifacts:
+    name: plan-$CI_COMMIT_REF_SLUG
+    paths:
+      - $TF_ROOT/tfplan
+    expire_in: 1 week
+    reports:
+      terraform: $TF_ROOT/tfplan.json
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH =~ /^feature\/.*/
+
+# Container build job
+build:containers:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "/certs/client"
+  before_script:
+    - apk add --no-cache aws-cli
+    - !reference [default, before_script]
+    - |
+      # ECR Login
+      aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com
+  script:
+    - cd docker
+    - |
+      # Build and push containers only on main branch
+      if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+        # Build backend
+        docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-backend:${CI_COMMIT_SHA} backend/
+        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-backend:${CI_COMMIT_SHA}
+        
+        # Build frontend
+        docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-frontend:${CI_COMMIT_SHA} frontend/
+        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-frontend:${CI_COMMIT_SHA}
+        
+        # Build database
+        docker build -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-database:${CI_COMMIT_SHA} database/
+        docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-database:${CI_COMMIT_SHA}
+        
+        echo "Container images built and pushed successfully"
+      else
+        echo "Skipping container build for feature branch: $CI_COMMIT_REF_NAME"
+        docker build backend/ --dry-run || echo "Backend build validation"
+        docker build frontend/ --dry-run || echo "Frontend build validation"
+        docker build database/ --dry-run || echo "Database build validation"
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH =~ /^feature\/.*/
+      changes:
+        - docker/**/*
+
+# Terraform apply job (main branch only)
+terraform:apply:
+  stage: deploy
+  script:
+    - cd $TF_ROOT
+    - terraform init
+    - terraform apply -input=false tfplan
+  artifacts:
+    name: apply-$CI_COMMIT_REF_SLUG
+    paths:
+      - $TF_ROOT/terraform.tfstate
+    expire_in: 1 week
+  dependencies:
+    - terraform:plan
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: false
+
+# Helm deployment job (main branch only)
+deploy:helm:
+  stage: deploy
+  image: alpine/helm:latest
+  before_script:
+    - apk add --no-cache aws-cli curl
+    - !reference [default, before_script]
+    - |
+      # Install kubectl
+      curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      chmod +x kubectl
+      mv kubectl /usr/local/bin/
+    - |
+      # Get K3s cluster endpoint and configure kubectl
+      export K3S_ENDPOINT=$(aws ssm get-parameter --name "/k3s/cluster/endpoint" --query "Parameter.Value" --output text)
+      export K3S_TOKEN=$(aws ssm get-parameter --name "/k3s/cluster/token" --with-decryption --query "Parameter.Value" --output text)
+      
+      # Configure kubectl
+      kubectl config set-cluster k3s --server=$K3S_ENDPOINT --insecure-skip-tls-verify=true
+      kubectl config set-credentials k3s --token=$K3S_TOKEN
+      kubectl config set-context k3s --cluster=k3s --user=k3s
+      kubectl config use-context k3s
+  script:
+    - cd helm/multi-container-app
+    - |
+      # Update values with new image tags
+      helm upgrade --install multi-container-app . \
+        --set backend.image.tag=${CI_COMMIT_SHA} \
+        --set frontend.image.tag=${CI_COMMIT_SHA} \
+        --set database.image.tag=${CI_COMMIT_SHA} \
+        --set backend.image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-backend \
+        --set frontend.image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-frontend \
+        --set database.image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${ECR_REPO_PREFIX}-database \
+        --wait --timeout=10m
+  dependencies:
+    - build:containers
+    - terraform:apply
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+      allow_failure: false
+
+# Cleanup job for feature branches
+cleanup:terraform:
+  stage: cleanup
+  script:
+    - cd $TF_ROOT
+    - terraform init
+    - terraform destroy -auto-approve
+  rules:
+    - if: $CI_COMMIT_BRANCH =~ /^feature\/.*/
+      when: manual
+      allow_failure: true
+  environment:
+    name: feature/$CI_COMMIT_REF_SLUG
+    action: stop
