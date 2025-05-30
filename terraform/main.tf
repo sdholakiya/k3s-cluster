@@ -196,10 +196,98 @@ resource "aws_instance" "k3s_node" {
 # K3S Configuration Stage
 # ==========================================================
 
+# Install K3s on existing instance if needed
+resource "null_resource" "install_k3s_existing" {
+  count = (var.skip_ec2_creation && !var.skip_k3s_install) ? 1 : 0
+  depends_on = [data.aws_instance.existing]
+
+  triggers = {
+    instance_id = data.aws_instance.existing[0].id
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      echo "Installing K3s on existing instance"
+      
+      # Install dependencies and K3s
+      cat > /tmp/k3s_install.sh << 'INSTALL_SCRIPT'
+#!/bin/bash
+# Install dependencies
+apt-get update
+apt-get install -y open-iscsi nfs-common curl
+systemctl enable iscsid && systemctl start iscsid
+
+# Configure custom K3s installation
+mkdir -p /etc/rancher/k3s
+cat > /etc/rancher/k3s/config.yaml << EOF
+# K3s server configuration
+token: "auto-generated-token"
+node-name: ${var.instance_name}
+tls-san:
+  - ${var.instance_name}
+disable:
+  - traefik # We'll use our own ingress
+kube-controller-manager-arg:
+  - "bind-address=0.0.0.0"
+kube-scheduler-arg:
+  - "bind-address=0.0.0.0"
+kube-proxy-arg:
+  - "metrics-bind-address=0.0.0.0"
+flannel-backend: "vxlan"
+default-local-storage-path: /opt/local-path-provisioner
+write-kubeconfig-mode: "0644"
+write-kubeconfig: /tmp/kubeconfig
+EOF
+
+# Install K3s server
+curl -sfL https://get.k3s.io | sh -
+
+# Wait for K3s to start
+sleep 45
+
+# Get K3s token for later use
+K3S_TOKEN=$(cat /var/lib/rancher/k3s/server/node-token)
+echo "K3S_TOKEN=$K3S_TOKEN" > /tmp/k3s-token
+
+# Install Helm
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Make kubectl and kubeconfig accessible
+chmod 644 /etc/rancher/k3s/k3s.yaml
+cp /etc/rancher/k3s/k3s.yaml /tmp/kubeconfig
+chmod 644 /tmp/kubeconfig
+
+# Install Kubernetes metrics server
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+# Set up ingress-nginx
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+helm install ingress-nginx ingress-nginx/ingress-nginx --create-namespace --namespace ingress-nginx
+
+# Export k3s API endpoint
+PRIVATE_IP=$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || hostname -I | awk '{print $1}')
+echo "K3S_API_ENDPOINT=https://$PRIVATE_IP:6443" > /tmp/k3s-api-endpoint
+
+# Wait for ingress controller to be ready
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=180s
+INSTALL_SCRIPT
+
+      # Execute the installation script
+      sudo bash /tmp/k3s_install.sh
+      
+      echo "K3s installation completed"
+    EOT
+  }
+}
+
 # This resource is only created if EC2 has been created (either in this run or a previous one)
 resource "null_resource" "get_kubeconfig" {
   count      = var.skip_k3s_install ? 0 : 1
-  depends_on = [aws_instance.k3s_node]
+  depends_on = [aws_instance.k3s_node, null_resource.install_k3s_existing]
 
   # Use either the newly created instance or a data source to get an existing instance ID
   triggers = {
@@ -208,23 +296,29 @@ resource "null_resource" "get_kubeconfig" {
 
   provisioner "local-exec" {
     command = <<-EOT
-      # Wait for instance to be ready and SSM agent to start
+      # Wait for K3s to be ready
       sleep 120
       
       # Create output directory
       mkdir -p ${path.module}/output
       
-      # Use SSM to get kubeconfig
-      aws ssm start-session \
-        --target ${var.skip_ec2_creation ? data.aws_instance.existing[0].id : aws_instance.k3s_node[0].id} \
-        --document-name AWS-RunShellScript \
-        --parameters 'commands=["cat /tmp/kubeconfig"]' \
-        --output text > ${path.module}/output/kubeconfig.tmp || echo "Failed to get kubeconfig via SSM"
+      # Use local commands when skip_ec2_creation is true (means we're using existing instance)
+      if [ "${var.skip_ec2_creation}" = "true" ]; then
+        echo "Using existing instance, running local commands"
+        sudo cat /tmp/kubeconfig > ${path.module}/output/kubeconfig 2>/dev/null || \
+        sudo cat /etc/rancher/k3s/k3s.yaml > ${path.module}/output/kubeconfig || \
+        echo "Failed to get kubeconfig locally"
+      else
+        echo "Creating new instance, using SSM"
+        aws ssm start-session \
+          --target ${aws_instance.k3s_node[0].id} \
+          --document-name AWS-RunShellScript \
+          --parameters 'commands=["cat /tmp/kubeconfig"]' \
+          --output text > ${path.module}/output/kubeconfig.tmp || echo "Failed to get kubeconfig via SSM"
+        
+        grep -v "Starting session with SessionId" ${path.module}/output/kubeconfig.tmp | grep -v "Waiting for connections" > ${path.module}/output/kubeconfig || echo "Failed to clean kubeconfig"
+      fi
       
-      # Clean up the output file (remove SSM session output headers/footers)
-      grep -v "Starting session with SessionId" ${path.module}/output/kubeconfig.tmp | grep -v "Waiting for connections" > ${path.module}/output/kubeconfig || echo "Failed to clean kubeconfig"
-      
-      # Make the helper script executable
       chmod +x ${path.module}/ssm_commands.sh
     EOT
   }
