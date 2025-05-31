@@ -291,7 +291,7 @@ resource "null_resource" "get_kubeconfig" {
 
   # Use either the newly created instance or a data source to get an existing instance ID
   triggers = {
-    instance_id = var.skip_ec2_creation ? data.aws_instance.existing[0].id : aws_instance.k3s_node[0].id
+    instance_id = var.skip_ec2_creation ? data.aws_instance.existing[0].id : (length(aws_instance.k3s_node) > 0 ? aws_instance.k3s_node[0].id : null)
   }
 
   provisioner "local-exec" {
@@ -311,7 +311,7 @@ resource "null_resource" "get_kubeconfig" {
       else
         echo "Creating new instance, using SSM"
         aws ssm start-session \
-          --target ${aws_instance.k3s_node[0].id} \
+          --target ${length(aws_instance.k3s_node) > 0 ? aws_instance.k3s_node[0].id : "MISSING_INSTANCE"} \
           --document-name AWS-RunShellScript \
           --parameters 'commands=["cat /tmp/kubeconfig"]' \
           --output text > ${path.module}/output/kubeconfig.tmp || echo "Failed to get kubeconfig via SSM"
@@ -330,7 +330,7 @@ resource "null_resource" "kubeconfig_update" {
 
   # Use either the newly created instance or a data source to get an existing instance
   provisioner "local-exec" {
-    command = "sed -i.bak 's/127.0.0.1/${var.skip_ec2_creation ? data.aws_instance.existing[0].private_ip : aws_instance.k3s_node[0].private_ip}/g' ${path.module}/output/kubeconfig"
+    command = "sed -i.bak 's/127.0.0.1/${var.skip_ec2_creation ? data.aws_instance.existing[0].private_ip : (length(aws_instance.k3s_node) > 0 ? aws_instance.k3s_node[0].private_ip : "127.0.0.1")}/g' ${path.module}/output/kubeconfig"
   }
 }
 
