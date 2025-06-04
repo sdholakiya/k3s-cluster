@@ -282,6 +282,85 @@ INSTALL_SCRIPT
       echo "K3s installation completed"
     EOT
   }
+
+  provisioner "local-exec" {
+    when = destroy
+    command = <<-EOT
+      # Only uninstall if K3s installation was not skipped
+      if [ "${var.skip_k3s_install}" = "false" ]; then
+        echo "Uninstalling K3s from existing instance"
+      
+      # Create K3s uninstall script
+      cat > /tmp/k3s_uninstall.sh << 'UNINSTALL_SCRIPT'
+#!/bin/bash
+echo "Starting K3s uninstallation..."
+
+# Stop K3s service
+if systemctl is-active --quiet k3s; then
+  echo "Stopping K3s service..."
+  sudo systemctl stop k3s
+fi
+
+# Disable K3s service
+if systemctl is-enabled --quiet k3s 2>/dev/null; then
+  echo "Disabling K3s service..."
+  sudo systemctl disable k3s
+fi
+
+# Run official K3s uninstall script if it exists
+if [ -f /usr/local/bin/k3s-uninstall.sh ]; then
+  echo "Running official K3s uninstall script..."
+  sudo /usr/local/bin/k3s-uninstall.sh
+else
+  echo "Official uninstall script not found, performing manual cleanup..."
+  
+  # Remove K3s binary
+  sudo rm -f /usr/local/bin/k3s
+  
+  # Remove K3s service file
+  sudo rm -f /etc/systemd/system/k3s.service
+  
+  # Remove K3s data directory
+  sudo rm -rf /var/lib/rancher/k3s
+  
+  # Remove K3s config directory
+  sudo rm -rf /etc/rancher/k3s
+  
+  # Remove kubeconfig files
+  sudo rm -f /tmp/kubeconfig
+  sudo rm -f /tmp/k3s-token
+  sudo rm -f /tmp/k3s-api-endpoint
+  
+  # Reload systemd
+  sudo systemctl daemon-reload
+fi
+
+# Clean up any remaining containers
+if command -v docker >/dev/null 2>&1; then
+  echo "Cleaning up Docker containers..."
+  sudo docker system prune -af 2>/dev/null || true
+fi
+
+# Clean up any remaining network interfaces
+echo "Cleaning up network interfaces..."
+sudo ip link delete cni0 2>/dev/null || true
+sudo ip link delete flannel.1 2>/dev/null || true
+
+echo "K3s uninstallation completed"
+UNINSTALL_SCRIPT
+
+      # Execute the uninstall script
+      sudo bash /tmp/k3s_uninstall.sh
+      
+      # Clean up the script
+      rm -f /tmp/k3s_uninstall.sh
+      
+      echo "K3s cleanup completed"
+      else
+        echo "Skipping K3s uninstall (skip_k3s_install = true)"
+      fi
+    EOT
+  }
 }
 
 # This resource is only created if EC2 has been created (either in this run or a previous one)
@@ -320,6 +399,18 @@ resource "null_resource" "get_kubeconfig" {
       fi
       
       chmod +x ${path.module}/ssm_commands.sh
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when = destroy
+    command = <<-EOT
+      echo "Cleaning up kubeconfig and output files..."
+      
+      # Remove output directory and files
+      rm -rf ${path.module}/output/
+      
+      echo "Kubeconfig cleanup completed"
     EOT
   }
 }
