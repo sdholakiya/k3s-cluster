@@ -67,4 +67,3 @@ EOF
 terraform_state_bucket         = "your-terraform-state-bucket-name"
 terraform_state_key            = "k3s-cluster/terraform.tfstate" 
 terraform_state_region         = "us-west-2" # For GovCloud: "us-gov-west-1"
-terraform_state_dynamodb_table = "terraform-state-lock"

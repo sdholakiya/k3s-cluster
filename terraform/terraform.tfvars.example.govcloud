@@ -42,4 +42,3 @@ use_ssm               = true
 terraform_state_bucket         = "your-govcloud-terraform-state-bucket"
 terraform_state_key            = "k3s-cluster/terraform.tfstate"
 terraform_state_region         = "us-gov-west-1"
-terraform_state_dynamodb_table = "terraform-state-lock"

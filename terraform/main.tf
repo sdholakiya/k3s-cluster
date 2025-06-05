@@ -2,11 +2,10 @@ provider "aws" {
   region = var.aws_region
   # Use appropriate endpoint for GovCloud
   endpoints {
-    dynamodb = var.is_govcloud ? "https://dynamodb.${var.aws_region}.amazonaws.com" : null
-    ec2      = var.is_govcloud ? "https://ec2.${var.aws_region}.amazonaws.com" : null
-    iam      = var.is_govcloud ? "https://iam.${var.aws_region}.amazonaws.com" : null
-    s3       = var.is_govcloud ? "https://s3.${var.aws_region}.amazonaws.com" : null
-    ssm      = var.is_govcloud ? "https://ssm.${var.aws_region}.amazonaws.com" : null
+    ec2 = var.is_govcloud ? "https://ec2.${var.aws_region}.amazonaws.com" : null
+    iam = var.is_govcloud ? "https://iam.${var.aws_region}.amazonaws.com" : null
+    s3  = var.is_govcloud ? "https://s3.${var.aws_region}.amazonaws.com" : null
+    ssm = var.is_govcloud ? "https://ssm.${var.aws_region}.amazonaws.com" : null
   }
 }
 
@@ -185,7 +184,7 @@ resource "aws_instance" "k3s_node" {
                 --selector=app.kubernetes.io/component=controller \
                 --timeout=180s
               K3S_SETUP
-              }
+}
 
               # Custom user data script provided by the user
               ${var.user_data_script}
@@ -198,11 +197,12 @@ resource "aws_instance" "k3s_node" {
 
 # Install K3s on existing instance if needed
 resource "null_resource" "install_k3s_existing" {
-  count = (var.skip_ec2_creation && !var.skip_k3s_install) ? 1 : 0
+  count      = (var.skip_ec2_creation && !var.skip_k3s_install) ? 1 : 0
   depends_on = [data.aws_instance.existing]
 
   triggers = {
-    instance_id = data.aws_instance.existing[0].id
+    instance_id      = data.aws_instance.existing[0].id
+    skip_k3s_install = var.skip_k3s_install
   }
 
   provisioner "local-exec" {
@@ -284,10 +284,10 @@ INSTALL_SCRIPT
   }
 
   provisioner "local-exec" {
-    when = destroy
+    when    = destroy
     command = <<-EOT
       # Only uninstall if K3s installation was not skipped
-      if [ "${var.skip_k3s_install}" = "false" ]; then
+      if [ "${self.triggers.skip_k3s_install}" = "false" ]; then
         echo "Uninstalling K3s from existing instance"
       
       # Create K3s uninstall script
@@ -403,7 +403,7 @@ resource "null_resource" "get_kubeconfig" {
   }
 
   provisioner "local-exec" {
-    when = destroy
+    when    = destroy
     command = <<-EOT
       echo "Cleaning up kubeconfig and output files..."
       

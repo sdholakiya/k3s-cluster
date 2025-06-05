@@ -10,27 +10,27 @@ resource "aws_ssm_document" "k3s_api_port_forward" {
   name            = "K3sApiPortForward"
   document_type   = "Session"
   document_format = "JSON"
-  
+
   content = jsonencode({
     schemaVersion = "1.0"
     description   = "Port forwarding session to K3s API endpoint"
     sessionType   = "Port"
     parameters = {
       portNumber = {
-        type = "String",
+        type        = "String",
         description = "Port number of K3s API server",
-        default = "6443"
+        default     = "6443"
       },
       localPortNumber = {
-        type = "String",
+        type        = "String",
         description = "Local port number",
-        default = "6443"
+        default     = "6443"
       }
     },
     properties = {
-      portNumber = "{{ portNumber }}",
+      portNumber      = "{{ portNumber }}",
       localPortNumber = "{{ localPortNumber }}",
-      type = "LocalPortForwarding"
+      type            = "LocalPortForwarding"
     }
   })
 
@@ -44,7 +44,7 @@ resource "aws_ssm_document" "k3s_api_port_forward" {
 resource "aws_iam_policy" "k3s_api_access" {
   name        = "K3sApiAccessPolicy"
   description = "Policy to allow K3s API access via SSM port forwarding"
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -91,8 +91,8 @@ resource "local_file" "k3s_api_access_script" {
     
     echo "Port forwarding session ended"
   EOT
-  
-  filename = "${path.module}/access_k3s_api.sh"
+
+  filename        = "${path.module}/access_k3s_api.sh"
   file_permission = "0755"
 }
 
@@ -116,6 +116,6 @@ output "k3s_api_access_instructions" {
     This establishes a secure tunnel to the K3s API endpoint through AWS Systems Manager,
     allowing you to access the K3s cluster running in the private subnet.
   EOT
-  
+
   description = "Instructions for accessing the K3s API endpoint from outside the private subnet"
 }

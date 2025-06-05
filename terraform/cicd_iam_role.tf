@@ -120,17 +120,6 @@ resource "aws_iam_policy" "cicd_policy" {
           "arn:aws:s3:::${var.terraform_state_bucket}/*"
         ]
       },
-      # DynamoDB permissions for Terraform state locking
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:DescribeTable"
-        ]
-        Resource = "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/terraform-state-lock"
-      },
       # SSM permissions for instance management
       {
         Effect = "Allow"
@@ -274,15 +263,6 @@ resource "aws_iam_policy" "cicd_feature_policy" {
           "arn:aws:s3:::${var.terraform_state_bucket}",
           "arn:aws:s3:::${var.terraform_state_bucket}/*"
         ]
-      },
-      # DynamoDB read permissions for state locking
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:DescribeTable"
-        ]
-        Resource = "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/terraform-state-lock"
       }
     ]
   })

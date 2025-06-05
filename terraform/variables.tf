@@ -162,8 +162,3 @@ variable "terraform_state_region" {
   default     = "us-west-2"
 }
 
-variable "terraform_state_dynamodb_table" {
-  description = "DynamoDB table name for terraform state locking"
-  type        = string
-  default     = "terraform-state-lock"
-}
